@@ -1,0 +1,3 @@
+[submodule "android_backend_server"]
+	path = android_backend_server
+	url = https://github.com/shar1mo/android
