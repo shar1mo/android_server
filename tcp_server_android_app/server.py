@@ -1,90 +1,92 @@
 #!/usr/bin/env python3
 import zmq
 import json
+import psycopg2
 from datetime import datetime
-import traceback
 
-def main(bind_addr="tcp://0.0.0.0:8080", out_file="gps_data.json"):
+DB_HOST = "localhost"
+DB_NAME = "gps_db"
+DB_USER = "shar1mo"
+DB_PASS = "sharimo2005"
+DB_PORT = 5432
+
+def insert_combined_row(conn, data):
+    try:
+        loc = data.get("location", {})
+        cell_list = data.get("cell_info", [])
+        device_id = data.get("device_id", "Unknown_Device")
+        timestamp = data.get("timestamp", int(datetime.now().timestamp()*1000))
+        latitude = loc.get("latitude")
+        longitude = loc.get("longitude")
+        altitude = loc.get("altitude")
+        speed = loc.get("speed")
+
+        rssi = rsrp = rsrq = rssnr = pci = mcc = mnc = None
+        if len(cell_list) > 0:
+            for cell in cell_list:
+                if cell.get("type") == "LTE":
+                    idt = cell.get("identity", {})
+                    sig = cell.get("signal", {})
+                    rssi = sig.get("rssi")
+                    rsrp = sig.get("rsrp")
+                    rsrq = sig.get("rsrq")
+                    rssnr = sig.get("rssnr")
+                    pci = idt.get("pci")
+                    mcc = idt.get("mcc")
+                    mnc = idt.get("mnc")
+                    break  # берем первый LTE
+
+        server_time = datetime.now()
+
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO device_measurements
+                (device_id, latitude, longitude, altitude, speed, timestamp, server_time,
+                 rssi, rsrp, rsrq, rssnr, mcc, mnc, pci)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """, (device_id, latitude, longitude, altitude, speed, timestamp, server_time,
+                  rssi, rsrp, rsrq, rssnr, mcc, mnc, pci))
+        conn.commit()
+        return True
+    except Exception as e:
+        print("DB INSERT ERROR:", e)
+        return False
+
+def main():
+    print("Starting ZMQ server...")
+    conn = psycopg2.connect(host=DB_HOST, dbname=DB_NAME, user=DB_USER, password=DB_PASS, port=DB_PORT)
+    print("Connected to PostgreSQL")
+
     context = zmq.Context()
     socket = context.socket(zmq.REP)
+    socket.bind("tcp://0.0.0.0:8080")
+    print("Server listening...")
 
-    try:
-        socket.bind(bind_addr)
-        print(f"ZMQ server started on {bind_addr}")
-        print("Waiting for connections... (Ctrl-C to stop)")
-
-        while True:
-            try:
-                message = socket.recv_string()
-            except KeyboardInterrupt:
-                print("\nServer interrupted by user, shutting down...")
-                break
-            except Exception as e:
-                print(f"Recv error: {e}")
-                continue
-
-            print(f"Received: {message!r}")
-            reply = "error"
-
-            try:
-                msg_lc = message.lower()
-
-                if msg_lc == "exit":
-                    reply = "bye"
-                    socket.send_string(reply)
-                    print("Client requested disconnect.")
-                    continue
-
-                if msg_lc == "test":
-                    reply = "OK - server is working!"
-                    socket.send_string(reply)
-                    print("Test message handled.")
-                    continue
-
-                try:
-                    data = json.loads(message)
-                except json.JSONDecodeError:
-                    reply = "OK - message received"
-                    socket.send_string(reply)
-                    continue
-
-                data["server_time"] = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-
-                try:
-                    with open(out_file, "a", encoding="utf-8") as f:
-                        f.write(json.dumps(data, ensure_ascii=False) + "\n")
-                        f.flush()
-                except Exception as e:
-                    print(f"Failed to write to {out_file}: {e}")
-                    traceback.print_exc()
-
-                lat = data.get("latitude")
-                lon = data.get("longitude")
-                if isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
-                    print(f"Saved GPS data: {lat:.6f}, {lon:.6f}")
-                else:
-                    print(f"Saved GPS data (no numeric lat/lon): {data}")
-
-                reply = "GPS data saved"
-
-            except Exception as e:
-                print("Processing error:", e)
-                traceback.print_exc()
-                reply = "error"
-
-            try:
-                socket.send_string(reply)
-            except Exception as e:
-                print("Failed to send reply:", e)
-                continue
-
-    finally:
+    while True:
         try:
-            socket.close()
-            context.term()
-        except Exception:
-            pass
-        print("Server stopped.")
+            message = socket.recv_string()
+        except KeyboardInterrupt:
+            break
+        if message.lower() == "exit":
+            socket.send_string("bye")
+            continue
+        if message.lower() == "test":
+            socket.send_string("OK")
+            continue
+
+        try:
+            data = json.loads(message)
+        except:
+            socket.send_string("invalid json")
+            continue
+
+        data["server_time"] = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+        ok = insert_combined_row(conn, data)
+        socket.send_string("saved" if ok else "db_error")
+
+    socket.close()
+    context.term()
+    conn.close()
 
 if __name__ == "__main__":
     main()
