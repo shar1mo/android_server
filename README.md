@@ -41,4 +41,4 @@ live-график маршрута устройства:
 ## screenshots
 ![live RSSI plot](screenshots/live_rssi.jpg)
 
-![data base](db_device_measurement.jpg)
+![data base](screenshots/db_device_measurement.jpg)
